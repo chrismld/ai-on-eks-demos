@@ -1,0 +1,124 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k6-script
+  namespace: default
+data:
+  load-test.js: |
+    import http from 'k6/http';
+    import { check, sleep } from 'k6';
+
+    // Staged Load Test for vLLM Autoscaling with GPU Node Provisioning
+    //
+    // This test accounts for ~5 minute GPU node startup time:
+    //
+    // Phase 1 (0-30s):    Light load (5 VUs) - trigger initial scale-up
+    // Phase 2 (30s-5m):   Steady light load (10 VUs) - wait for first nodes
+    // Phase 3 (5m-6m):    Ramp to medium (30 VUs) - trigger more scaling
+    // Phase 4 (6m-10m):   Hold medium load - wait for all nodes ready
+    // Phase 5 (10m-12m):  Ramp to high load (80 VUs) - full capacity test
+    // Phase 6 (12m-14m):  Sustained high load - demonstrate scaled system
+    // Phase 7 (14m-15m):  Ramp down
+    //
+    // With 10 pods at ~30 RPS each, expect ~300 RPS at full scale
+
+    export const options = {
+      scenarios: {
+        staged_scaling: {
+          executor: 'ramping-vus',
+          startVUs: 5,
+          stages: [
+            // Phase 1: Light load to trigger initial scaling
+            { duration: '30s', target: 10 },
+            // Phase 2: Hold light load while first GPU nodes provision (~5 min)
+            { duration: '4m30s', target: 10 },
+            // Phase 3: Ramp to medium load to trigger more scaling
+            { duration: '30s', target: 30 },
+            // Phase 4: Hold medium load while remaining nodes provision (~4 min)
+            { duration: '4m', target: 30 },
+            // Phase 5: Ramp to high load - all pods should be ready
+            { duration: '1m', target: 80 },
+            // Phase 6: Sustained high load - demonstrate full capacity
+            { duration: '3m', target: 80 },
+            // Phase 7: Ramp down
+            { duration: '1m', target: 0 },
+          ],
+        },
+      },
+      thresholds: {
+        http_req_duration: ['p(95)<20000'], // 95% under 20s (allow for cold starts)
+        http_req_failed: ['rate<0.15'],     // Allow 15% failures during scaling
+      },
+    };
+
+    const prompts = [
+      'Explain Kubernetes autoscaling in one sentence.',
+      'What is KEDA and how does it work?',
+      'Describe GPU inference optimization briefly.',
+      'What is Karpenter used for?',
+      'Explain horizontal pod autoscaling.',
+    ];
+
+    export default function () {
+      const url = 'http://vllm-service.default.svc.cluster.local:8000/v1/completions';
+      const prompt = prompts[Math.floor(Math.random() * prompts.length)];
+      
+      const payload = JSON.stringify({
+        model: 'TheBloke/Mistral-7B-Instruct-v0.2-AWQ',
+        prompt: prompt,
+        max_tokens: 50,
+        temperature: 0.7,
+      });
+
+      const params = {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: '45s',
+      };
+
+      const res = http.post(url, payload, params);
+      
+      check(res, {
+        'status is 200': (r) => r.status === 200,
+        'has completion': (r) => {
+          try {
+            const body = JSON.parse(r.body);
+            return body.choices && body.choices.length > 0;
+          } catch (e) {
+            return false;
+          }
+        },
+      });
+
+      // Small sleep to control request rate per VU
+      sleep(0.2 + Math.random() * 0.3);
+    }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k6-load-test
+  namespace: default
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: k6
+        image: grafana/k6:latest
+        command: ["k6", "run", "--out", "json=/tmp/results.json", "/scripts/load-test.js"]
+        volumeMounts:
+        - name: k6-script
+          mountPath: /scripts
+        resources:
+          requests:
+            cpu: 500m
+            memory: 256Mi
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+      volumes:
+      - name: k6-script
+        configMap:
+          name: k6-script

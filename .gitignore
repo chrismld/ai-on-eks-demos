@@ -1,0 +1,74 @@
+# macOS
+.DS_Store
+
+# Terraform
+.terraform*
+terraform.tfstate*
+terraform.tfvars
+*.tfvars
+!terraform.tfvars.example
+.terraform.lock.hcl
+
+# Kubernetes
+kubeconfig
+*.kubeconfig
+
+# Generated Kubernetes manifests (from templates)
+**/kubernetes/api/deployment.yaml
+**/kubernetes/frontend/deployment.yaml
+**/kubernetes/karpenter/gpu-nodeclass.yaml
+**/kubernetes/karpenter/gpu-nodeclass-soci.yaml
+**/kubernetes/vllm/deployment.yaml
+**/kubernetes/vllm/torch-cache-storage.yaml
+**/kubernetes/efs/pv.yaml
+
+# Snapshot configuration
+.snapshot-id
+
+# Environment
+.env
+.env.local
+.demo-config
+*.pem
+*.key
+
+# Node.js / Frontend
+node_modules/
+.next/
+out/
+dist/
+build/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python / API
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.bak
+*.backup
+
+# Local-only files (not in git)
+**/tmp/
+
+# Scripts output
+setup-env.sh
+
+demo-config

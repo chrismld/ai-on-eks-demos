@@ -1,0 +1,114 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: vllm
+  template:
+    metadata:
+      labels:
+        app: vllm
+    spec:
+      nodeSelector:
+        intent: gpu-inference
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: karpenter.k8s.aws/instance-gpu-name
+                    operator: NotIn
+                    values: ["v100", "k80", "t4"]
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
+        - name: torch-cache
+          persistentVolumeClaim:
+            claimName: torch-compile-cache
+      containers:
+        - name: vllm
+          image: REGISTRY_PLACEHOLDER/ecr-public/deep-learning-containers/vllm:0.13-gpu-py312-ec2
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--model"
+            - "S3_MODEL_PATH_PLACEHOLDER"
+            - "--served-model-name=MODEL_NAME_PLACEHOLDER"
+            - "--load-format"
+            - "runai_streamer"
+            - "--max-model-len"
+            - "4096"
+            - "--max-num-seqs"
+            - "32"
+            - "--gpu-memory-utilization"
+            - "0.90"
+            - "--dtype"
+            - "auto"
+            - "--quantization"
+            - "awq_marlin"
+            - "--cudagraph-capture-sizes"
+            - "1"
+            - "2"
+            - "4"
+            - "8"
+            - "16"
+            - "24"
+            - "32"
+          ports:
+            - name: api
+              containerPort: 8000
+            - name: metrics
+              containerPort: 8080
+          resources:
+            requests:
+              nvidia.com/gpu: 1
+              memory: 24Gi
+              cpu: 4
+            limits:
+              nvidia.com/gpu: 1
+              memory: 24Gi
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: torch-cache
+              mountPath: /root/.cache/vllm/torch_compile_cache
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /v1/models
+              port: 8000
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-service
+  namespace: default
+spec:
+  selector:
+    app: vllm
+  ports:
+    - name: api
+      port: 8000
+      targetPort: 8000
+    - name: metrics
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP

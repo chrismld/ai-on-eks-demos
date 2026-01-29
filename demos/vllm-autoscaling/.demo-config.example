@@ -1,0 +1,38 @@
+# Demo Configuration
+# Copy this to .demo-config and set your values
+
+# Project name - used for ECR repository paths
+PROJECT_NAME=ai-workloads-tube-demo
+
+# Cluster name - used for EKS cluster, Karpenter tags, and S3 bucket discovery
+CLUSTER_NAME=kedify-on-eks-blueprint
+
+# AWS Region
+AWS_REGION=eu-west-1
+
+# Model configuration (AWQ quantized for T4 GPU compatibility)
+# MODEL_NAME: HuggingFace model ID (used for download and served-model-name)
+# MODEL_S3_PATH: Path within the S3 bucket where model is stored
+# Using AWQ quantized model (~4GB) instead of full precision (~14GB)
+# This allows running on T4 GPUs (16GB VRAM) with room for KV cache
+MODEL_NAME=TheBloke/Mistral-7B-Instruct-v0.2-AWQ
+MODEL_S3_PATH=models/mistral-7b-awq
+
+# EBS Snapshot ID with pre-cached vLLM container image
+# This eliminates container pull time - image is already on disk at node boot
+# Create with: make create-snapshot (after running vLLM once on a node)
+# Example: SNAPSHOT_ID=snap-0abc123def456789
+SNAPSHOT_ID=
+
+# EFS Filesystem ID for torch.compile cache (optional)
+# Auto-detected from terraform output if not set
+# This caches compiled PyTorch graphs across all vLLM pods
+# First pod compiles (~43s), subsequent pods skip compilation (~0s)
+# Example: EFS_FILESYSTEM_ID=fs-0abc123def456789
+EFS_FILESYSTEM_ID=
+
+# Frontend URL (optional)
+# If using CloudFront, set this to your CloudFront distribution URL
+# If not set, will use ALB URL from ingress
+# Example: FRONTEND_URL=https://d1234567890.cloudfront.net
+FRONTEND_URL=

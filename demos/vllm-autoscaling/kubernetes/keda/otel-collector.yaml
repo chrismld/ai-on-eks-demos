@@ -1,0 +1,157 @@
+# OpenTelemetry Collector for scraping vLLM metrics and forwarding to KEDA
+# This collector:
+# 1. Scrapes Prometheus metrics from vLLM pods on port 8000
+# 2. Renames vllm:num_requests_waiting -> vllm_num_requests_waiting (KEDA compatibility)
+# 3. Forwards metrics to kedify-otel-scaler for autoscaling decisions
+# 4. Exposes metrics via Prometheus endpoint for dashboard queries (port 8889)
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: scrape-vllm
+  namespace: keda
+  labels:
+    helm.sh/chart: v0.1.3
+    meta.helm.sh/release-name: kedify-agent
+spec:
+  mode: deployment
+  replicas: 1
+  imagePullPolicy: IfNotPresent
+  upgradeStrategy: none
+  ports:
+    - name: prometheus
+      port: 8889
+      targetPort: 8889
+      protocol: TCP
+  resources:
+    requests:
+      cpu: 200m
+      memory: 64Mi
+    limits:
+      cpu: 400m
+      memory: 128Mi
+  config:
+    receivers:
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: vllm-metrics
+              scrape_interval: 5s
+              kubernetes_sd_configs:
+                - role: pod
+                  namespaces:
+                    names:
+                      - default
+              relabel_configs:
+                # Only scrape pods with app=vllm label
+                - source_labels: [__meta_kubernetes_pod_label_app]
+                  action: keep
+                  regex: vllm
+                # Add pod name as label
+                - source_labels: [__meta_kubernetes_pod_name]
+                  action: replace
+                  target_label: pod_name
+                # Scrape metrics from port 8000 (vLLM API port)
+                - source_labels: [__address__]
+                  action: replace
+                  regex: (.+):.*
+                  replacement: $1:8000
+                  target_label: __address__
+
+    processors:
+      # Detect environment attributes
+      resourcedetection/env:
+        detectors: [env]
+        timeout: 2s
+        override: false
+
+      # Transform: rename metrics from colon format to underscore format
+      # vLLM exposes vllm:metric_name but Prometheus prefers vllm_metric_name
+      transform:
+        metric_statements:
+          - context: datapoint
+            statements:
+              - set(attributes["namespace"], resource.attributes["k8s.namespace.name"])
+              - set(attributes["pod"], resource.attributes["k8s.pod.name"])
+              - set(attributes["deployment"], resource.attributes["k8s.deployment.name"])
+          - context: metric
+            statements:
+              - set(name, "vllm_num_requests_waiting") where name == "vllm:num_requests_waiting"
+              - set(name, "vllm_num_requests_running") where name == "vllm:num_requests_running"
+              - set(name, "vllm_e2e_request_latency_seconds") where name == "vllm:e2e_request_latency_seconds"
+              - set(name, "vllm_request_success_total") where name == "vllm:request_success_total"
+              - set(name, "vllm_prompt_tokens_total") where name == "vllm:prompt_tokens_total"
+              - set(name, "vllm_generation_tokens_total") where name == "vllm:generation_tokens_total"
+              - set(name, "vllm_time_to_first_token_seconds") where name == "vllm:time_to_first_token_seconds"
+              - set(name, "vllm_request_time_per_output_token_seconds") where name == "vllm:request_time_per_output_token_seconds"
+              - set(name, "vllm_gpu_cache_usage_perc") where name == "vllm:gpu_cache_usage_perc"
+              - set(name, "vllm_kv_cache_usage_perc") where name == "vllm:kv_cache_usage_perc"
+
+      # Filter to only include the metrics we need for KEDA scaling
+      filter/metrics_keda:
+        metrics:
+          include:
+            match_type: strict
+            metric_names:
+              - vllm:num_requests_waiting
+              - vllm_num_requests_waiting
+              - vllm:num_requests_running
+              - vllm_num_requests_running
+
+      # Filter for dashboard metrics (includes more metrics)
+      filter/metrics_dashboard:
+        metrics:
+          include:
+            match_type: regexp
+            metric_names:
+              - vllm.*
+
+    exporters:
+      # OTLP exporter for KEDA scaling (only queue depth)
+      otlp/keda:
+        endpoint: kedify-otel-scaler.keda.svc:4317
+        tls:
+          insecure: true
+        compression: none
+
+      # Prometheus exporter for dashboard queries (all vLLM metrics)
+      prometheus:
+        endpoint: "0.0.0.0:8889"
+        namespace: ""
+        send_timestamps: true
+        resource_to_telemetry_conversion:
+          enabled: true
+
+    service:
+      telemetry:
+        logs:
+          level: info  # Change to 'debug' for troubleshooting
+      pipelines:
+        # Pipeline for KEDA scaling (filtered to queue depth only)
+        metrics/keda:
+          receivers: [prometheus]
+          processors: [resourcedetection/env, transform, filter/metrics_keda]
+          exporters: [otlp/keda]
+        # Pipeline for dashboard (all vLLM metrics via Prometheus endpoint)
+        metrics/dashboard:
+          receivers: [prometheus]
+          processors: [resourcedetection/env, transform, filter/metrics_dashboard]
+          exporters: [prometheus]
+
+---
+# Service to expose the OTel Collector's Prometheus endpoint for dashboard queries
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-vllm-metrics
+  namespace: keda
+  labels:
+    app.kubernetes.io/name: scrape-vllm-collector
+spec:
+  type: ClusterIP
+  ports:
+    - name: prometheus
+      port: 8889
+      targetPort: 8889
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: scrape-vllm-collector

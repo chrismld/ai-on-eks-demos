@@ -1,0 +1,29 @@
+# EFS StorageClass and PVC for torch.compile cache
+# This enables sharing compiled graphs across all vLLM pods
+# First pod compiles (~43s), subsequent pods skip compilation (~0s)
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: efs-torch-cache
+provisioner: efs.csi.aws.com
+parameters:
+  provisioningMode: efs-ap
+  fileSystemId: EFS_FILESYSTEM_ID_PLACEHOLDER
+  directoryPerms: "755"
+  basePath: "/torch-compile-cache"
+mountOptions:
+  - tls
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: torch-compile-cache
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteMany  # All pods can read/write
+  storageClassName: efs-torch-cache
+  resources:
+    requests:
+      storage: 5Gi  # EFS is elastic, this is just a placeholder

@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: default
+
+resources:
+- karpenter/gpu-nodeclass-soci.yaml
+- karpenter/gpu-nodepool.yaml
+# KEDA resources
+- keda/scaledobject.yaml
+- keda/otel-collector.yaml
+- keda/otel-rbac.yaml
+# Load testing - apply separately with: kubectl apply -f kubernetes/k6-load-test.yaml
+# - k6-load-test.yaml
+- vllm/deployment.yaml
+- api/deployment.yaml
+- frontend/deployment.yaml
+- frontend/ingress.yaml
