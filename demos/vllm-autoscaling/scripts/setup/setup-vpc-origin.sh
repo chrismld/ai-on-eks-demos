@@ -1,12 +1,15 @@
 #!/bin/bash
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
 echo "🔧 Setting up CloudFront VPC Origin for internal ALB..."
 
 # Get region from Terraform
-cd terraform
+cd "$PROJECT_ROOT/terraform"
 AWS_REGION=$(terraform output -raw region 2>/dev/null || echo "eu-west-1")
-cd ..
+cd "$PROJECT_ROOT"
 
 # Get ALB ARN
 echo "📋 Getting ALB ARN from region: $AWS_REGION..."
@@ -113,22 +116,22 @@ echo ""
 echo "📝 Updating terraform.tfvars with VPC Origin ID..."
 
 # Check if terraform.tfvars exists
-if [ ! -f terraform/terraform.tfvars ]; then
+if [ ! -f "$PROJECT_ROOT/terraform/terraform.tfvars" ]; then
   echo "❌ Error: terraform/terraform.tfvars not found"
   echo "   Copy terraform.tfvars.example first: cp terraform/terraform.tfvars.example terraform/terraform.tfvars"
   exit 1
 fi
 
 # Update or add the VPC Origin ID
-if grep -q "cloudfront_vpc_origin_id" terraform/terraform.tfvars; then
+if grep -q "cloudfront_vpc_origin_id" "$PROJECT_ROOT/terraform/terraform.tfvars"; then
   # Update existing line
-  sed -i.bak "s|^.*cloudfront_vpc_origin_id.*|cloudfront_vpc_origin_id = \"$VPC_ORIGIN_ID\"|" terraform/terraform.tfvars
-  rm terraform/terraform.tfvars.bak
+  sed -i.bak "s|^.*cloudfront_vpc_origin_id.*|cloudfront_vpc_origin_id = \"$VPC_ORIGIN_ID\"|" "$PROJECT_ROOT/terraform/terraform.tfvars"
+  rm "$PROJECT_ROOT/terraform/terraform.tfvars.bak"
 else
   # Add new line
-  echo "" >> terraform/terraform.tfvars
-  echo "# CloudFront VPC Origin ID" >> terraform/terraform.tfvars
-  echo "cloudfront_vpc_origin_id = \"$VPC_ORIGIN_ID\"" >> terraform/terraform.tfvars
+  echo "" >> "$PROJECT_ROOT/terraform/terraform.tfvars"
+  echo "# CloudFront VPC Origin ID" >> "$PROJECT_ROOT/terraform/terraform.tfvars"
+  echo "cloudfront_vpc_origin_id = \"$VPC_ORIGIN_ID\"" >> "$PROJECT_ROOT/terraform/terraform.tfvars"
 fi
 
 echo "✅ terraform.tfvars updated with VPC Origin ID"

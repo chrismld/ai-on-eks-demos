@@ -2,12 +2,13 @@
 set -e
 export PATH="/usr/local/bin:$PATH"
 
-SCRIPT_DIR=$(dirname "$0")
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 echo "🔧 Updating Kubernetes manifests..."
 
 # Source demo config if it exists
-CONFIG_FILE="$SCRIPT_DIR/../.demo-config"
+CONFIG_FILE="$PROJECT_ROOT/.demo-config"
 if [ -f "$CONFIG_FILE" ]; then
     source "$CONFIG_FILE"
 fi
@@ -61,14 +62,14 @@ sed \
   -e "s|REGISTRY_PLACEHOLDER|${REGISTRY}|g" \
   -e "s|PROJECT_PLACEHOLDER|${PROJECT_NAME}|g" \
   -e "s|REGION_PLACEHOLDER|${AWS_REGION}|g" \
-  kubernetes/api/deployment.yaml.template > kubernetes/api/deployment.yaml
+  "$PROJECT_ROOT/kubernetes/api/deployment.yaml.template" > "$PROJECT_ROOT/kubernetes/api/deployment.yaml"
 
 # Update Frontend deployment from template
 echo "📝 Generating kubernetes/frontend/deployment.yaml from template..."
 sed \
   -e "s|REGISTRY_PLACEHOLDER|${REGISTRY}|g" \
   -e "s|PROJECT_PLACEHOLDER|${PROJECT_NAME}|g" \
-  kubernetes/frontend/deployment.yaml.template > kubernetes/frontend/deployment.yaml
+  "$PROJECT_ROOT/kubernetes/frontend/deployment.yaml.template" > "$PROJECT_ROOT/kubernetes/frontend/deployment.yaml"
 
 # Update vLLM deployment from template
 if [ -n "$MODELS_BUCKET" ]; then
@@ -78,30 +79,17 @@ if [ -n "$MODELS_BUCKET" ]; then
     -e "s|REGISTRY_PLACEHOLDER|${REGISTRY}|g" \
     -e "s|S3_MODEL_PATH_PLACEHOLDER|${S3_MODEL_PATH}|g" \
     -e "s|MODEL_NAME_PLACEHOLDER|${MODEL_NAME}|g" \
-    kubernetes/vllm/deployment.yaml.template > kubernetes/vllm/deployment.yaml
+    "$PROJECT_ROOT/kubernetes/vllm/deployment.yaml.template" > "$PROJECT_ROOT/kubernetes/vllm/deployment.yaml"
 else
   echo "⚠️  Skipping vLLM manifest (models bucket not found)"
 fi
 
 # Update Karpenter EC2NodeClass from template
-echo "📝 Generating kubernetes/karpenter/gpu-nodeclass.yaml from template..."
+echo "📝 Generating kubernetes/karpenter/gpu-nodeclass-soci.yaml from template..."
 
-# Check if SNAPSHOT_ID is set for pre-cached container images
-if [ -n "$SNAPSHOT_ID" ]; then
-  echo "   Using EBS snapshot: ${SNAPSHOT_ID}"
-  sed \
-    -e "s|\${CLUSTER_NAME}|${CLUSTER_NAME}|g" \
-    -e "s|\${SNAPSHOT_ID}|${SNAPSHOT_ID}|g" \
-    kubernetes/karpenter/gpu-nodeclass.yaml.template > kubernetes/karpenter/gpu-nodeclass.yaml
-else
-  echo "⚠️  SNAPSHOT_ID not set - generating nodeclass without snapshot"
-  echo "   Set SNAPSHOT_ID in .demo-config after creating a snapshot"
-  # Remove the snapshotID line if not set
-  sed \
-    -e "s|\${CLUSTER_NAME}|${CLUSTER_NAME}|g" \
-    -e '/snapshotID:/d' \
-    kubernetes/karpenter/gpu-nodeclass.yaml.template > kubernetes/karpenter/gpu-nodeclass.yaml
-fi
+sed \
+  -e "s|\${CLUSTER_NAME}|${CLUSTER_NAME}|g" \
+  "$PROJECT_ROOT/kubernetes/karpenter/gpu-nodeclass-soci.yaml.template" > "$PROJECT_ROOT/kubernetes/karpenter/gpu-nodeclass-soci.yaml"
 
 # Update torch.compile cache storage from template (EFS)
 # Get EFS filesystem ID from .demo-config or auto-detect via AWS CLI
@@ -118,7 +106,7 @@ if [ -n "$EFS_FILESYSTEM_ID" ]; then
   echo "   Using EFS filesystem: ${EFS_FILESYSTEM_ID}"
   sed \
     -e "s|EFS_FILESYSTEM_ID_PLACEHOLDER|${EFS_FILESYSTEM_ID}|g" \
-    kubernetes/vllm/torch-cache-storage.yaml.template > kubernetes/vllm/torch-cache-storage.yaml
+    "$PROJECT_ROOT/kubernetes/vllm/torch-cache-storage.yaml.template" > "$PROJECT_ROOT/kubernetes/vllm/torch-cache-storage.yaml"
 else
   echo "⚠️  Skipping torch-cache-storage manifest (EFS not provisioned yet)"
   echo "   Run 'terraform apply' first, then re-run this script"

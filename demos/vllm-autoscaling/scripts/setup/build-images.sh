@@ -1,10 +1,14 @@
 #!/bin/bash
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
 # Load config from .demo-config if it exists
-if [ -f ".demo-config" ]; then
+CONFIG_FILE="$PROJECT_ROOT/.demo-config"
+if [ -f "$CONFIG_FILE" ]; then
   echo "🔍 Loading configuration from .demo-config..."
-  source .demo-config
+  source "$CONFIG_FILE"
 fi
 
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
@@ -38,7 +42,7 @@ docker buildx build \
   --platform linux/amd64,linux/arm64 \
   -t $REGISTRY/${PROJECT_NAME}/api:latest \
   --push \
-  app/api/
+  "$PROJECT_ROOT/app/api/"
 
 # Build and push Frontend
 echo "📦 Building Frontend..."
@@ -46,7 +50,7 @@ docker buildx build \
   --platform linux/amd64,linux/arm64 \
   -t $REGISTRY/${PROJECT_NAME}/frontend:latest \
   --push \
-  app/frontend/
+  "$PROJECT_ROOT/app/frontend/"
 
 echo "✅ Images built and pushed!"
 echo ""

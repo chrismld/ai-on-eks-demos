@@ -2711,6 +2711,8 @@ collect_all_metrics() {
         # This ensures final results screen shows data after load test ends
         METRIC_THROUGHPUT="${SESSION_RPS:-${LAST_GOOD_THROUGHPUT:-N/A}}"
         METRIC_TOKENS_PER_SEC="${SESSION_TOKENS_SEC:-${LAST_GOOD_TOKENS_PER_SEC:-N/A}}"
+        METRIC_TTFT_P50="${SESSION_TTFT_P50:-N/A}"
+        METRIC_TTFT_P95="${SESSION_TTFT_P95:-N/A}"
         METRIC_ITL_P50="${SESSION_ITL_P50:-N/A}"
         METRIC_ITL_P95="${SESSION_ITL_P95:-N/A}"
         METRIC_E2E_AVG="${SESSION_E2E_AVG:-N/A}"

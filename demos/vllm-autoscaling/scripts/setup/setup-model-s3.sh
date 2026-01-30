@@ -4,10 +4,11 @@
 # Supports resumable downloads and parallel S3 uploads
 set -e
 
-SCRIPT_DIR=$(dirname "$0")
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Source demo config if it exists
-CONFIG_FILE="$SCRIPT_DIR/../.demo-config"
+CONFIG_FILE="$PROJECT_ROOT/.demo-config"
 if [ -f "$CONFIG_FILE" ]; then
     source "$CONFIG_FILE"
 fi

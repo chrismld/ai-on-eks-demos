@@ -1,11 +1,15 @@
 #!/bin/bash
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
 echo "💥 Tearing down..."
 
 # Load config
-if [ -f ".demo-config" ]; then
-  source .demo-config
+CONFIG_FILE="$PROJECT_ROOT/.demo-config"
+if [ -f "$CONFIG_FILE" ]; then
+  source "$CONFIG_FILE"
 fi
 
 # Delete all services (removes ALBs)
@@ -22,7 +26,7 @@ if [ -n "$SNAPSHOT_ID" ]; then
 fi
 
 # Terraform destroy
-cd terraform
+cd "$PROJECT_ROOT/terraform"
 terraform destroy -auto-approve
 
 echo "✅ Cleanup complete!"

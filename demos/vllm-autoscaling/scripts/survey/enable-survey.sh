@@ -1,15 +1,18 @@
 #!/bin/bash
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
 echo "🎯 Switching to survey mode..."
 echo ""
 
 # Get config from Terraform if available
-if [ -d "terraform" ] && [ -f "terraform/terraform.tfstate" ]; then
-  cd terraform
+if [ -d "$PROJECT_ROOT/terraform" ] && [ -f "$PROJECT_ROOT/terraform/terraform.tfstate" ]; then
+  cd "$PROJECT_ROOT/terraform"
   AWS_REGION=$(terraform output -raw region 2>/dev/null || echo "eu-west-1")
   PROJECT_NAME=$(terraform output -raw project_name 2>/dev/null || echo "ai-workloads-tube-demo")
-  cd ..
+  cd "$PROJECT_ROOT"
 else
   AWS_REGION="eu-west-1"
   PROJECT_NAME="ai-workloads-tube-demo"

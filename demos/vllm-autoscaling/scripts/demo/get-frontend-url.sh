@@ -1,10 +1,13 @@
 #!/bin/bash
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
 echo "🔍 Getting frontend URL..."
 
 # Check if CloudFront is configured
-CLOUDFRONT_URL=$(cd terraform && terraform output -raw cloudfront_url 2>/dev/null || echo "")
+CLOUDFRONT_URL=$(cd "$PROJECT_ROOT/terraform" && terraform output -raw cloudfront_url 2>/dev/null || echo "")
 
 if [ -n "$CLOUDFRONT_URL" ] && [ "$CLOUDFRONT_URL" != "" ]; then
   echo ""
