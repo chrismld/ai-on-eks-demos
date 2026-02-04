@@ -1708,7 +1708,16 @@ check_k6_job_status() {
             parse_k6_results
         fi
     elif [[ "$job_failed" == "True" ]]; then
-        K6_JOB_STATUS="failed"
+        # Job failed - but might still have results if stopped gracefully with SIGTERM
+        # k6 prints summary on SIGTERM before exiting, so try to parse results
+        if [[ "$K6_JOB_STATUS" != "completed" ]] && [[ "$K6_JOB_STATUS" != "failed" ]]; then
+            K6_JOB_STATUS="completed"  # Treat as completed to show results
+            parse_k6_results
+            # If no results found, mark as failed
+            if [[ -z "$K6_TOTAL_REQUESTS" ]]; then
+                K6_JOB_STATUS="failed"
+            fi
+        fi
     elif kubectl get job k6-load-test -n default &>/dev/null; then
         K6_JOB_STATUS="running"
     else
@@ -2477,7 +2486,7 @@ render_insights_section() {
             insights+=("Load test running - monitoring scaling...")
             insight_colors+=("$COLOR_INFO")
         fi
-    elif [[ "$K6_JOB_STATUS" == "failed" ]]; then
+    elif [[ "$K6_JOB_STATUS" == "failed" ]] && [[ -z "$K6_TOTAL_REQUESTS" ]]; then
         insights+=("Load test failed - check k6 logs")
         insight_colors+=("$COLOR_ERROR")
     fi
