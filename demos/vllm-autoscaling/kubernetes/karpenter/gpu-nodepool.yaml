@@ -38,8 +38,8 @@ spec:
         kind: EC2NodeClass
         name: gpu-soci
   limits:
-    cpu: 200
-    memory: 800Gi
+    cpu: 400
+    memory: 1600Gi
   disruption:
     consolidationPolicy: WhenEmpty
     consolidateAfter: 30s
