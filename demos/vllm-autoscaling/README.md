@@ -73,6 +73,8 @@ make run-demo
 make generate-qr
 ```
 
+![Dashboard Demo](docs/dashboard.gif)
+
 ### Cleanup
 
 ```bash
