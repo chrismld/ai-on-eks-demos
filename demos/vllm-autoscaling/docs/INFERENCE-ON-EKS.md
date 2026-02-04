@@ -480,6 +480,69 @@ For comparison, without optimization: 6-8 minutes. That's the difference between
 
 ---
 
+## Example: vLLM Cold Start Breakdown
+
+Here's an actual cold start captured from our production environment running Mistral 7B AWQ on a g5.2xlarge Spot instance. This breakdown shows exactly where time goes during pod startup.
+
+### Kubernetes Infrastructure Phase
+
+| Phase | Duration | Notes |
+|-------|----------|-------|
+| Node provisioning (Karpenter) | ~47s | Spot instance launch + node registration |
+| Image pull (SOCI lazy-load) | ~44s | 8GB image, only critical layers pulled upfront |
+
+### vLLM Initialization Phase
+
+From the pod logs, here's the detailed breakdown of vLLM startup:
+
+```
+06:34:11  vLLM API server version 0.13.0 starts
+06:34:25  Model architecture resolved (MistralForCausalLM)
+06:34:26  Chunked prefill enabled, max_num_batched_tokens=2048
+06:34:40  Starting to load model from S3...
+06:35:02  [RunAI Streamer] Streamed 3.9 GiB in 2.4s @ 1.6 GiB/s
+06:35:03  Model loading took 22.8s, 3.88 GiB memory
+06:35:10  Dynamo bytecode transform: 6.47s
+06:35:18  Loaded compiled graph from EFS cache: 1.34s
+06:35:18  torch.compile total: 7.81s
+06:35:19  Available KV cache memory: 15.72 GiB
+06:35:19  GPU KV cache size: 128,800 tokens
+06:35:20  CUDA graph capture: 1s
+06:35:20  Engine init (profile, KV cache, warmup): 16.92s
+06:35:21  Server ready, listening on port 8000
+```
+
+### Timing Summary
+
+| Component | Time | Optimization |
+|-----------|------|--------------|
+| S3 model streaming | 2.4s | RunAI Streamer @ 1.6 GiB/s |
+| Model load to GPU | 22.8s | AWQ 4-bit (3.9GB vs 14GB) |
+| torch.compile | 7.8s | EFS cache hit (vs 60s cold) |
+| CUDA graph capture | 1.0s | Pre-configured capture sizes |
+| Engine initialization | 16.9s | KV cache allocation + warmup |
+| **vLLM total** | **~51s** | |
+
+### Key Observations
+
+1. **S3 streaming is fast**: 3.9 GiB in 2.4 seconds thanks to VPC endpoints eliminating NAT bottleneck
+2. **EFS cache saves ~50s**: torch.compile loaded from cache in 1.34s instead of recompiling
+3. **AWQ quantization pays off**: 4-bit model is 3.9GB vs 14GB for FP16—faster to stream, faster to load
+4. **KV cache is generous**: 15.72 GiB available for 128K tokens of context
+
+### Total Cold Start Time
+
+```
+Kubernetes phases:  ~91s (node + image)
+vLLM phases:        ~51s (model + compile + init)
+─────────────────────────────
+Total:              ~142s (~2.4 minutes)
+```
+
+This is with all optimizations enabled. Without SOCI, S3 streaming, and EFS cache, expect 6-8 minutes.
+
+---
+
 ## Monitoring and Observability
 
 ### Essential Dashboards

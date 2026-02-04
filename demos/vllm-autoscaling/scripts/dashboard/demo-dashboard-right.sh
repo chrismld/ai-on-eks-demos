@@ -76,6 +76,28 @@ get_pods_per_node() {
     kubectl get pods -n default -l app=vllm --field-selector spec.nodeName="$node_name" -o json 2>/dev/null | jq -r '.items | length' 2>/dev/null || echo "0"
 }
 
+# Get the most recently created pod's startup timeline breakdown
+get_latest_pod_startup_timeline() {
+    kubectl get pods -n default -l app=vllm -o json 2>/dev/null | jq -r '
+        [.items[] | select(.status.phase == "Running" and .status.containerStatuses[0].ready == true)] |
+        sort_by(.metadata.creationTimestamp) |
+        last |
+        if . == null then
+            ""
+        else
+            {
+                name: .metadata.name,
+                created: .metadata.creationTimestamp,
+                scheduled: (.status.conditions[] | select(.type=="PodScheduled") | .lastTransitionTime),
+                initialized: (.status.conditions[] | select(.type=="Initialized") | .lastTransitionTime),
+                containerStarted: .status.containerStatuses[0].state.running.startedAt,
+                ready: (.status.conditions[] | select(.type=="Ready") | .lastTransitionTime)
+            } |
+            .name + "|" + .created + "|" + .scheduled + "|" + .initialized + "|" + .containerStarted + "|" + .ready
+        end
+    ' 2>/dev/null || echo ""
+}
+
 # Render a line with exact padding to PANEL_WIDTH
 # Usage: render_line "content" content_visible_length
 render_line() {
@@ -213,6 +235,7 @@ render_nodes_panel() {
     render_hline
     
     local row_count=0
+    local max_node_rows=6
     
     if [[ -z "$node_data" ]]; then
         local empty_msg=" ${COLOR_MUTED}No inference nodes found${NC}"
@@ -221,7 +244,7 @@ render_nodes_panel() {
     else
         while IFS='|' read -r name instance_type capacity_type zone node_status; do
             [[ -z "$name" ]] && continue
-            [[ $row_count -ge $MAX_ROWS ]] && break
+            [[ $row_count -ge $max_node_rows ]] && break
             
             # Short name: first part before dot, last 12 chars
             local short_name
@@ -259,10 +282,91 @@ render_nodes_panel() {
     fi
     
     # Fill remaining rows
-    while [[ $row_count -lt $MAX_ROWS ]]; do
+    while [[ $row_count -lt $max_node_rows ]]; do
         render_empty_line
         ((row_count++))
     done
+    
+    # Footer
+    printf "${BOLD_CYAN}${BOX_L_BL}"
+    for ((i=0; i<INNER_WIDTH; i++)); do printf "${BOX_L_H}"; done
+    printf "${BOX_L_BR}${NC}${CLEAR_LINE}\n"
+}
+
+render_startup_timeline_panel() {
+    local timeline_data="$1"
+    
+    # Header: "┌─ vLLM Startup Breakdown ─────...─┐" (total 72 chars)
+    printf "${BOLD_CYAN}${BOX_L_TL}${BOX_L_H}${NC}${BOLD_WHITE} vLLM Startup Breakdown ${NC}${BOLD_CYAN}"
+    for ((i=0; i<45; i++)); do printf "${BOX_L_H}"; done
+    printf "${BOX_L_TR}${NC}${CLEAR_LINE}\n"
+    
+    if [[ -z "$timeline_data" ]]; then
+        printf "${BOLD_CYAN}${BOX_L_V}${NC} ${COLOR_MUTED}No ready pods found${NC}%*s${BOLD_CYAN}${BOX_L_V}${NC}${CLEAR_LINE}\n" 50 ""
+        for ((i=0; i<10; i++)); do render_empty_line; done
+    else
+        IFS='|' read -r name created scheduled initialized container_started ready <<< "$timeline_data"
+        
+        local short_name="${name: -30}"
+        
+        # Calculate time differences for K8s phases
+        local node_time="-"
+        local image_time="-"
+        local total_time="-"
+        
+        if [[ -n "$created" ]] && [[ -n "$scheduled" ]]; then
+            local created_epoch=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$created" "+%s" 2>/dev/null)
+            local scheduled_epoch=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$scheduled" "+%s" 2>/dev/null)
+            if [[ -n "$created_epoch" ]] && [[ -n "$scheduled_epoch" ]]; then
+                local secs=$((scheduled_epoch - created_epoch))
+                [[ $secs -lt 0 ]] && secs=0
+                node_time="${secs}s"
+            fi
+        fi
+        
+        if [[ -n "$scheduled" ]] && [[ -n "$container_started" ]]; then
+            local scheduled_epoch=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$scheduled" "+%s" 2>/dev/null)
+            local started_epoch=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$container_started" "+%s" 2>/dev/null)
+            if [[ -n "$scheduled_epoch" ]] && [[ -n "$started_epoch" ]]; then
+                local secs=$((started_epoch - scheduled_epoch))
+                [[ $secs -lt 0 ]] && secs=0
+                image_time="${secs}s"
+            fi
+        fi
+        
+        if [[ -n "$created" ]] && [[ -n "$ready" ]]; then
+            local created_epoch=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$created" "+%s" 2>/dev/null)
+            local ready_epoch=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$ready" "+%s" 2>/dev/null)
+            if [[ -n "$created_epoch" ]] && [[ -n "$ready_epoch" ]]; then
+                local secs=$((ready_epoch - created_epoch))
+                [[ $secs -lt 0 ]] && secs=0
+                total_time="${secs}s"
+            fi
+        fi
+        
+        # Pod name line (30 chars for name)
+        printf "${BOLD_CYAN}${BOX_L_V}${NC} ${BOLD}Pod:${NC} ${COLOR_INFO}%-30s${NC}%*s${BOLD_CYAN}${BOX_L_V}${NC}${CLEAR_LINE}\n" "$short_name" 34 ""
+        
+        render_hline
+        
+        # K8s infrastructure phases
+        printf "${BOLD_CYAN}${BOX_L_V}${NC} ${COLOR_MUTED}K8s:${NC} %-40s ${COLOR_GOOD}%8s${NC}%*s${BOLD_CYAN}${BOX_L_V}${NC}${CLEAR_LINE}\n" "Node provisioning (Karpenter)" "$node_time" 15 ""
+        printf "${BOLD_CYAN}${BOX_L_V}${NC}      %-40s ${COLOR_GOOD}%8s${NC}%*s${BOLD_CYAN}${BOX_L_V}${NC}${CLEAR_LINE}\n" "Image pull (SOCI lazy-load)" "$image_time" 15 ""
+        
+        render_hline
+        
+        # vLLM internal phases (from logs analysis)
+        printf "${BOLD_CYAN}${BOX_L_V}${NC} ${COLOR_MUTED}vLLM:${NC}%-40s ${COLOR_GOOD}%8s${NC}%*s${BOLD_CYAN}${BOX_L_V}${NC}${CLEAR_LINE}\n" "S3 model stream (RunAI @ 1.6GiB/s)" "~2s" 15 ""
+        printf "${BOLD_CYAN}${BOX_L_V}${NC}      %-40s ${COLOR_GOOD}%8s${NC}%*s${BOLD_CYAN}${BOX_L_V}${NC}${CLEAR_LINE}\n" "Model loading to GPU" "~23s" 15 ""
+        printf "${BOLD_CYAN}${BOX_L_V}${NC}      %-40s ${COLOR_GOOD}%8s${NC}%*s${BOLD_CYAN}${BOX_L_V}${NC}${CLEAR_LINE}\n" "torch.compile (EFS cache hit)" "~8s" 15 ""
+        printf "${BOLD_CYAN}${BOX_L_V}${NC}      %-40s ${COLOR_GOOD}%8s${NC}%*s${BOLD_CYAN}${BOX_L_V}${NC}${CLEAR_LINE}\n" "CUDA graph capture" "~1s" 15 ""
+        printf "${BOLD_CYAN}${BOX_L_V}${NC}      %-40s ${COLOR_GOOD}%8s${NC}%*s${BOLD_CYAN}${BOX_L_V}${NC}${CLEAR_LINE}\n" "Engine init (KV cache, warmup)" "~17s" 15 ""
+        
+        render_hline
+        
+        # Total line
+        printf "${BOLD_CYAN}${BOX_L_V}${NC} ${BOLD}%-45s${NC} ${BOLD}${COLOR_GOOD}%8s${NC}%*s${BOLD_CYAN}${BOX_L_V}${NC}${CLEAR_LINE}\n" "Total Time to Ready:" "$total_time" 15 ""
+    fi
     
     # Footer
     printf "${BOLD_CYAN}${BOX_L_BL}"
@@ -278,13 +382,10 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         while true; do
             printf "${CURSOR_HOME}"
             
-            # Spacing to align with main dashboard
-            echo ""
-            echo ""
-            echo ""
-            echo ""
-            echo ""
-            echo ""
+            # Title header
+            printf "${BOLD_CYAN}╔══════════════════════════════════════════════════════════════════════╗${NC}${CLEAR_LINE}\n"
+            printf "${BOLD_CYAN}║${NC}${BOLD_WHITE}                  Cluster Infrastructure Status                       ${NC}${BOLD_CYAN}║${NC}${CLEAR_LINE}\n"
+            printf "${BOLD_CYAN}╚══════════════════════════════════════════════════════════════════════╝${NC}${CLEAR_LINE}\n"
             echo ""
             
             local pod_data=$(get_pod_timing_info)
@@ -294,6 +395,11 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             
             local node_data=$(get_inference_nodes_info)
             render_nodes_panel "$node_data"
+            
+            echo ""
+            
+            local timeline_data=$(get_latest_pod_startup_timeline)
+            render_startup_timeline_panel "$timeline_data"
             
             sleep $REFRESH_INTERVAL
         done

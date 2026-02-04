@@ -678,13 +678,13 @@ determine_status_color() {
             fi
             ;;
         "load")
-            # Load intensity: informational coloring
+            # Load intensity: neutral coloring (high load is expected, not an error)
             if [[ $numeric_value -ge $THRESHOLD_LOAD_HIGH ]]; then
-                echo "$COLOR_ERROR"
+                echo "$COLOR_INFO"
             elif [[ $numeric_value -ge $THRESHOLD_LOAD_MEDIUM ]]; then
-                echo "$COLOR_WARNING"
+                echo "$COLOR_INFO"
             elif [[ $numeric_value -ge $THRESHOLD_LOAD_LOW ]]; then
-                echo "$COLOR_GOOD"
+                echo "$COLOR_INFO"
             else
                 echo "$COLOR_INFO"
             fi
@@ -1379,8 +1379,12 @@ get_performance_metrics() {
         fi
         
         # Get KV cache usage percentage (0-100)
+        # Try both metric names: vllm_gpu_cache_usage_perc (older) and vllm_kv_cache_usage_perc (newer)
         local kv_cache_raw
-        kv_cache_raw=$(parse_metric_from_raw "$raw_metrics" "vllm_kv_cache_usage_perc" "avg")
+        kv_cache_raw=$(parse_metric_from_raw "$raw_metrics" "vllm_gpu_cache_usage_perc" "avg")
+        if [[ -z "$kv_cache_raw" ]] || [[ ! "$kv_cache_raw" =~ ^[0-9.]+$ ]]; then
+            kv_cache_raw=$(parse_metric_from_raw "$raw_metrics" "vllm_kv_cache_usage_perc" "avg")
+        fi
         if [[ -n "$kv_cache_raw" ]] && [[ "$kv_cache_raw" =~ ^[0-9.]+$ ]]; then
             # Convert from 0-1 to 0-100 percentage
             kv_cache_pct=$(printf "%.0f" $(echo "$kv_cache_raw * 100" | bc 2>/dev/null))
@@ -1453,17 +1457,17 @@ get_performance_metrics() {
         fi
         
         # Parse ITL (Inter-Token Latency) histogram buckets for percentiles
-        # vllm:request_time_per_output_token_seconds_bucket{le="X"} gives cumulative counts
+        # vllm:time_per_output_token_seconds_bucket{le="X"} gives cumulative counts
         local itl_data=""
         while IFS= read -r line; do
-            if [[ "$line" =~ ^vllm[_:]request_time_per_output_token_seconds_bucket ]]; then
+            if [[ "$line" =~ ^vllm[_:]time_per_output_token_seconds_bucket ]]; then
                 itl_data+="$line"$'\n'
             fi
         done <<< "$raw_metrics"
         
         if [[ -n "$itl_data" ]]; then
             # Parse histogram buckets to estimate percentiles
-            # Format: vllm:request_time_per_output_token_seconds_bucket{le="0.5",...} count
+            # Format: vllm:time_per_output_token_seconds_bucket{le="0.5",...} count
             local -a buckets=()
             local -a counts=()
             local total_count=0
@@ -2377,50 +2381,94 @@ render_insights_section() {
         insights+=("$line3")
         insight_colors+=("$COLOR_INFO")
     elif [[ "$K6_JOB_STATUS" == "running" ]]; then
-        insights+=("Load test running...")
-        insight_colors+=("$COLOR_INFO")
+        # During load test, show scaling activity insights
+        
+        # Check for Karpenter provisioning new nodes
+        if [[ "$METRIC_NODECLAIMS_PENDING" =~ ^[0-9]+$ ]] && [[ $METRIC_NODECLAIMS_PENDING -gt 0 ]]; then
+            insights+=("Karpenter: Provisioning $METRIC_NODECLAIMS_PENDING GPU node(s)")
+            insight_colors+=("$COLOR_WARNING")
+        fi
+        
+        # Check for KEDA/HPA scaling decisions
+        if [[ "$METRIC_PODS_DESIRED" =~ ^[0-9]+$ ]] && [[ "$METRIC_PODS_RUNNING" =~ ^[0-9]+$ ]]; then
+            if [[ $METRIC_PODS_DESIRED -gt $METRIC_PODS_RUNNING ]]; then
+                local pending=$((METRIC_PODS_DESIRED - METRIC_PODS_RUNNING))
+                # Show KEDA scaling with queue context
+                if [[ "$METRIC_QUEUE_DEPTH" =~ ^[0-9]+$ ]] && [[ $METRIC_QUEUE_DEPTH -gt 0 ]]; then
+                    insights+=("KEDA: Scaling ${METRIC_PODS_RUNNING}→${METRIC_PODS_DESIRED} pods (queue: $METRIC_QUEUE_DEPTH)")
+                else
+                    insights+=("KEDA: Scaling up to $METRIC_PODS_DESIRED pods")
+                fi
+                insight_colors+=("$COLOR_WARNING")
+            fi
+        fi
+        
+        # Check for pods starting up (not ready yet)
+        if [[ "$METRIC_PODS_NOT_READY" =~ ^[0-9]+$ ]] && [[ $METRIC_PODS_NOT_READY -gt 0 ]]; then
+            insights+=("vLLM: $METRIC_PODS_NOT_READY pod(s) loading model (~2 min)")
+            insight_colors+=("$COLOR_INFO")
+        fi
+        
+        # Show queue pressure if high
+        if [[ "$METRIC_QUEUE_DEPTH" =~ ^[0-9]+$ ]]; then
+            if [[ $METRIC_QUEUE_DEPTH -ge $THRESHOLD_QUEUE_CRITICAL ]]; then
+                insights+=("Queue: $METRIC_QUEUE_DEPTH waiting (critical - scaling)")
+                insight_colors+=("$COLOR_ERROR")
+            elif [[ $METRIC_QUEUE_DEPTH -ge $THRESHOLD_QUEUE_HIGH ]]; then
+                insights+=("Queue: $METRIC_QUEUE_DEPTH waiting (high - scaling triggered)")
+                insight_colors+=("$COLOR_WARNING")
+            fi
+        fi
+        
+        # If no scaling activity, show stable status
+        if [[ ${#insights[@]} -eq 0 ]]; then
+            insights+=("Load test running - monitoring scaling...")
+            insight_colors+=("$COLOR_INFO")
+        fi
     elif [[ "$K6_JOB_STATUS" == "failed" ]]; then
         insights+=("Load test failed - check k6 logs")
         insight_colors+=("$COLOR_ERROR")
     fi
     
-    # Analyze queue depth
-    if [[ "$METRIC_QUEUE_DEPTH" =~ ^[0-9]+$ ]]; then
-        if [[ $METRIC_QUEUE_DEPTH -ge $THRESHOLD_QUEUE_CRITICAL ]]; then
-            insights+=("Queue critical - heavy scaling pressure")
-            insight_colors+=("$COLOR_ERROR")
-        elif [[ $METRIC_QUEUE_DEPTH -ge $THRESHOLD_QUEUE_HIGH ]]; then
-            insights+=("Queue high - scaling in progress")
-            insight_colors+=("$COLOR_WARNING")
-        elif [[ $METRIC_QUEUE_DEPTH -eq 0 ]] && [[ "$K6_JOB_STATUS" != "completed" ]]; then
-            insights+=("Queue empty - system idle")
-            insight_colors+=("$COLOR_INFO")
+    # Analyze queue depth (when not in load test)
+    if [[ "$K6_JOB_STATUS" != "running" ]] && [[ "$K6_JOB_STATUS" != "completed" ]]; then
+        if [[ "$METRIC_QUEUE_DEPTH" =~ ^[0-9]+$ ]]; then
+            if [[ $METRIC_QUEUE_DEPTH -ge $THRESHOLD_QUEUE_CRITICAL ]]; then
+                insights+=("Queue critical - heavy scaling pressure")
+                insight_colors+=("$COLOR_ERROR")
+            elif [[ $METRIC_QUEUE_DEPTH -ge $THRESHOLD_QUEUE_HIGH ]]; then
+                insights+=("Queue high - scaling in progress")
+                insight_colors+=("$COLOR_WARNING")
+            elif [[ $METRIC_QUEUE_DEPTH -eq 0 ]]; then
+                insights+=("Queue empty - system idle")
+                insight_colors+=("$COLOR_INFO")
+            fi
         fi
-    fi
-    
-    # Analyze pod scaling
-    if [[ "$METRIC_PODS_RUNNING" =~ ^[0-9]+$ ]] && [[ "$METRIC_PODS_DESIRED" =~ ^[0-9]+$ ]]; then
-        if [[ $METRIC_PODS_DESIRED -gt $METRIC_PODS_RUNNING ]]; then
-            local pending=$((METRIC_PODS_DESIRED - METRIC_PODS_RUNNING))
-            insights+=("Scaling up: $pending pod(s) pending")
-            insight_colors+=("$COLOR_WARNING")
-        elif [[ $METRIC_PODS_DESIRED -lt $METRIC_PODS_RUNNING ]]; then
-            insights+=("Scaling down in progress")
-            insight_colors+=("$COLOR_INFO")
-        elif [[ $METRIC_PODS_RUNNING -gt 0 ]] && [[ "$K6_JOB_STATUS" != "completed" ]]; then
-            insights+=("Pods stable at $METRIC_PODS_RUNNING replica(s)")
-            insight_colors+=("$COLOR_GOOD")
+        
+        # Analyze pod scaling
+        if [[ "$METRIC_PODS_RUNNING" =~ ^[0-9]+$ ]] && [[ "$METRIC_PODS_DESIRED" =~ ^[0-9]+$ ]]; then
+            if [[ $METRIC_PODS_DESIRED -gt $METRIC_PODS_RUNNING ]]; then
+                local pending=$((METRIC_PODS_DESIRED - METRIC_PODS_RUNNING))
+                insights+=("Scaling up: $pending pod(s) pending")
+                insight_colors+=("$COLOR_WARNING")
+            elif [[ $METRIC_PODS_DESIRED -lt $METRIC_PODS_RUNNING ]]; then
+                insights+=("Scaling down in progress")
+                insight_colors+=("$COLOR_INFO")
+            elif [[ $METRIC_PODS_RUNNING -gt 0 ]]; then
+                insights+=("Pods stable at $METRIC_PODS_RUNNING replica(s)")
+                insight_colors+=("$COLOR_GOOD")
+            fi
         fi
-    fi
-    
-    # Analyze node status
-    if [[ "$METRIC_NODES_COUNT" =~ ^[0-9]+$ ]]; then
-        if [[ $METRIC_NODES_COUNT -eq 0 ]]; then
-            insights+=("No GPU nodes - Karpenter may provision")
-            insight_colors+=("$COLOR_WARNING")
-        elif [[ $METRIC_NODES_COUNT -ge 3 ]] && [[ "$K6_JOB_STATUS" != "completed" ]]; then
-            insights+=("$METRIC_NODES_COUNT GPU nodes active")
-            insight_colors+=("$COLOR_GOOD")
+        
+        # Analyze node status
+        if [[ "$METRIC_NODES_COUNT" =~ ^[0-9]+$ ]]; then
+            if [[ $METRIC_NODES_COUNT -eq 0 ]]; then
+                insights+=("No GPU nodes - Karpenter may provision")
+                insight_colors+=("$COLOR_WARNING")
+            elif [[ $METRIC_NODES_COUNT -ge 3 ]]; then
+                insights+=("$METRIC_NODES_COUNT GPU nodes active")
+                insight_colors+=("$COLOR_GOOD")
+            fi
         fi
     fi
     

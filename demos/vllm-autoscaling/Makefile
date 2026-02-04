@@ -1,4 +1,4 @@
-.PHONY: setup-infra build-push-images deploy-apps setup-cloudfront run-demo dashboard dashboard-right restart-demo enable-survey pick-winners teardown get-frontend-url generate-qr setup-model-s3 load-test load-test-cleanup update-manifests help
+.PHONY: setup-infra build-push-images deploy-apps setup-cloudfront run-demo dashboard dashboard-right restart-demo enable-survey pick-winners teardown get-frontend-url generate-qr setup-model-s3 load-test load-test-stop load-test-cleanup update-manifests help
 
 # Ensure /usr/local/bin is in PATH for kubectl and aws
 export PATH := /usr/local/bin:$(PATH)
@@ -16,6 +16,7 @@ help:
 	@echo "  make generate-qr         Generate QR code for audience"
 	@echo "  make run-demo            Start load test and terminal dashboard"
 	@echo "  make load-test           Run k6 load test (cleanup + start)"
+	@echo "  make load-test-stop      Stop load test gracefully (keeps summary)"
 	@echo "  make load-test-cleanup   Cleanup k6 load test job"
 	@echo "  make dashboard           Start terminal dashboard"
 	@echo "  make dashboard-right     Start right panel (pods & nodes detail)"
@@ -110,6 +111,17 @@ generate-qr:
 load-test:
 	@echo "🔥 Running k6 load test..."
 	bash scripts/demo/run-load-test.sh --watch
+
+load-test-stop:
+	@echo "🛑 Stopping k6 load test gracefully (summary will be printed)..."
+	@POD=$$(kubectl get pod -l job-name=k6-load-test -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
+	if [ -n "$$POD" ]; then \
+		kubectl exec $$POD -- kill -15 1 2>/dev/null || true; \
+		echo "⏳ Waiting for summary..."; \
+		kubectl logs -f job/k6-load-test; \
+	else \
+		echo "❌ No k6 load test running"; \
+	fi
 
 run-demo:
 	@echo "🎬 Starting demo..."
