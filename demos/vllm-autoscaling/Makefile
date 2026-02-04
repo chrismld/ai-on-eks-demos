@@ -1,4 +1,4 @@
-.PHONY: setup-infra build-push-images deploy-apps setup-cloudfront run-demo dashboard dashboard-right restart-demo enable-survey pick-winners teardown get-frontend-url generate-qr setup-model-s3 load-test load-test-stop load-test-cleanup update-manifests help
+.PHONY: setup-infra build-push-images deploy-apps setup-cloudfront run-demo dashboard dashboard-record dashboard-left dashboard-right restart-demo enable-survey pick-winners teardown get-frontend-url generate-qr setup-model-s3 load-test load-test-stop load-test-cleanup update-manifests help
 
 # Ensure /usr/local/bin is in PATH for kubectl and aws
 export PATH := /usr/local/bin:$(PATH)
@@ -18,8 +18,10 @@ help:
 	@echo "  make load-test           Run k6 load test (cleanup + start)"
 	@echo "  make load-test-stop      Stop load test gracefully (keeps summary)"
 	@echo "  make load-test-cleanup   Cleanup k6 load test job"
-	@echo "  make dashboard           Start terminal dashboard"
-	@echo "  make dashboard-right     Start right panel (pods & nodes detail)"
+	@echo "  make dashboard           Start terminal dashboard (tmux split view)"
+	@echo "  make dashboard-record    Record dashboard with asciinema"
+	@echo "  make dashboard-left      Start left panel only (main dashboard)"
+	@echo "  make dashboard-right     Start right panel only (pods & nodes)"
 	@echo "  make restart-demo        Restart demo to quiz mode"
 	@echo "  make enable-survey       Switch to survey mode (auto-archives previous)"
 	@echo "  make pick-winners        Draw 2 random winners"
@@ -132,11 +134,43 @@ load-test-cleanup:
 	bash scripts/demo/run-load-test.sh --cleanup-only
 
 dashboard:
-	@echo "📊 Starting terminal dashboard..."
+	@echo "📊 Starting terminal dashboard (tmux split view)..."
+	@if ! command -v tmux >/dev/null 2>&1; then \
+		echo "❌ Error: tmux is required but not installed"; \
+		echo "   Install with: brew install tmux"; \
+		exit 1; \
+	fi
+	@tmux kill-session -t demo-dashboard 2>/dev/null || true
+	@tmux new-session -d -s demo-dashboard -x 164 -y 50
+	@tmux split-window -h -t demo-dashboard
+	@tmux send-keys -t demo-dashboard:0.0 'clear && bash scripts/dashboard/demo-dashboard.sh' Enter
+	@tmux send-keys -t demo-dashboard:0.1 'clear && bash scripts/dashboard/demo-dashboard-right.sh' Enter
+	@tmux select-pane -t demo-dashboard:0.0
+	@tmux attach -t demo-dashboard
+
+dashboard-record:
+	@echo "🎬 Recording terminal dashboard with asciinema..."
+	@if ! command -v asciinema >/dev/null 2>&1; then \
+		echo "❌ Error: asciinema is required but not installed"; \
+		echo "   Install with: brew install asciinema"; \
+		exit 1; \
+	fi
+	@if ! command -v tmux >/dev/null 2>&1; then \
+		echo "❌ Error: tmux is required but not installed"; \
+		echo "   Install with: brew install tmux"; \
+		exit 1; \
+	fi
+	@rm -f docs/dashboard.cast
+	@tmux kill-session -t demo-dashboard 2>/dev/null || true
+	cd scripts/dashboard && asciinema rec --overwrite -c "tmux new-session -s demo-dashboard -x 164 -y 50 \; split-window -h \; send-keys -t 0 'clear; exec ./demo-dashboard.sh' Enter \; send-keys -t 1 'clear; exec ./demo-dashboard-right.sh' Enter \; select-pane -t 0" ../../docs/dashboard.cast
+	@echo "✅ Recording saved to docs/dashboard.cast"
+
+dashboard-left:
+	@echo "📊 Starting left panel only (main dashboard)..."
 	bash scripts/dashboard/demo-dashboard.sh
 
 dashboard-right:
-	@echo "📊 Starting right panel dashboard (pods & nodes)..."
+	@echo "📊 Starting right panel only (pods & nodes)..."
 	bash scripts/dashboard/demo-dashboard-right.sh
 
 restart-demo:

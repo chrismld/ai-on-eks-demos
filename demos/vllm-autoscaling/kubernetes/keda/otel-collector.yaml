@@ -83,6 +83,8 @@ spec:
               - set(name, "vllm_generation_tokens_total") where name == "vllm:generation_tokens_total"
               - set(name, "vllm_time_to_first_token_seconds") where name == "vllm:time_to_first_token_seconds"
               - set(name, "vllm_time_per_output_token_seconds") where name == "vllm:time_per_output_token_seconds"
+              - set(name, "vllm_request_time_per_output_token_seconds") where name == "vllm:request_time_per_output_token_seconds"
+              - set(name, "vllm_kv_cache_usage_perc") where name == "vllm:kv_cache_usage_perc"
               - set(name, "vllm_gpu_cache_usage_perc") where name == "vllm:gpu_cache_usage_perc"
 
       # Filter to only include the metrics we need for KEDA scaling

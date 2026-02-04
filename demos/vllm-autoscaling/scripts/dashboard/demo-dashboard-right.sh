@@ -30,6 +30,10 @@ INNER_WIDTH=70  # PANEL_WIDTH - 2 (for borders)
 
 cleanup() {
     printf "${CURSOR_SHOW}${NC}"
+    # Kill tmux session if running inside one
+    if [[ -n "$TMUX" ]]; then
+        tmux kill-session -t demo-dashboard 2>/dev/null
+    fi
     exit 0
 }
 trap cleanup SIGINT SIGTERM EXIT

@@ -32,11 +32,13 @@ Users → CloudFront → ALB → FastAPI → vLLM Pods (GPU)
 
 ```bash
 # macOS
-brew install terraform kubectl aws-cli docker jq
+brew install terraform kubectl aws-cli docker jq tmux
 
 # Verify AWS access
 aws sts get-caller-identity
 ```
+
+> **Note:** `tmux` is required for the split-screen terminal dashboard (`make dashboard`).
 
 ### Deploy (~30 minutes)
 

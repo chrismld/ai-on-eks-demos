@@ -7,6 +7,10 @@ fileMatchPattern: "**/demo-dashboard.sh"
 
 When modifying `scripts/dashboard/demo-dashboard.sh`, follow these strict layout constraints:
 
+# Terminal/Shell Usage
+
+- IMPORTANT! Do NOT paste or insert more than 5 lines of text into the terminal. Instead, write to temporary files in ./kiro-temp and clean up files after usage.
+
 ## Terminal Width Constraints
 
 - **Most sections**: 80 characters max per line

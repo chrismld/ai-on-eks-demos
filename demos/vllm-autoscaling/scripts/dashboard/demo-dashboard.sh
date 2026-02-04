@@ -1379,11 +1379,11 @@ get_performance_metrics() {
         fi
         
         # Get KV cache usage percentage (0-100)
-        # Try both metric names: vllm_gpu_cache_usage_perc (older) and vllm_kv_cache_usage_perc (newer)
+        # Try both metric names: vllm_kv_cache_usage_perc (vLLM 0.13+) and vllm_gpu_cache_usage_perc (older)
         local kv_cache_raw
-        kv_cache_raw=$(parse_metric_from_raw "$raw_metrics" "vllm_gpu_cache_usage_perc" "avg")
+        kv_cache_raw=$(parse_metric_from_raw "$raw_metrics" "vllm_kv_cache_usage_perc" "avg")
         if [[ -z "$kv_cache_raw" ]] || [[ ! "$kv_cache_raw" =~ ^[0-9.]+$ ]]; then
-            kv_cache_raw=$(parse_metric_from_raw "$raw_metrics" "vllm_kv_cache_usage_perc" "avg")
+            kv_cache_raw=$(parse_metric_from_raw "$raw_metrics" "vllm_gpu_cache_usage_perc" "avg")
         fi
         if [[ -n "$kv_cache_raw" ]] && [[ "$kv_cache_raw" =~ ^[0-9.]+$ ]]; then
             # Convert from 0-1 to 0-100 percentage
@@ -1407,7 +1407,8 @@ get_performance_metrics() {
         fi
         
         # Parse TTFT (Time To First Token) histogram buckets for percentiles
-        # vllm:time_to_first_token_seconds_bucket{le="X"} gives cumulative counts
+        # Uses awk to aggregate across multiple pods and calculate percentiles
+        # Format: metric{labels,le="X"} count [timestamp]
         local ttft_data=""
         while IFS= read -r line; do
             if [[ "$line" =~ ^vllm[_:]time_to_first_token_seconds_bucket ]]; then
@@ -1416,101 +1417,146 @@ get_performance_metrics() {
         done <<< "$raw_metrics"
         
         if [[ -n "$ttft_data" ]]; then
-            # Parse histogram buckets to estimate percentiles
-            local -a ttft_buckets=()
-            local -a ttft_counts=()
-            local ttft_total_count=0
-        
-            while IFS= read -r line; do
-                [[ -z "$line" ]] && continue
-                if [[ "$line" =~ le=\"([0-9.]+)\" ]]; then
-                    local le="${BASH_REMATCH[1]}"
-                    local count=$(echo "$line" | awk -F'} ' '{print $2}' | awk '{print $1}')
-                    if [[ "$count" =~ ^[0-9]+\.?[0-9]*$ ]]; then
-                        count=${count%.*}
-                        ttft_buckets+=("$le")
-                        ttft_counts+=("$count")
-                        ttft_total_count=$count
-                    fi
-                fi
-            done <<< "$ttft_data"
-        
-            if [[ $ttft_total_count -gt 0 ]] && [[ ${#ttft_buckets[@]} -gt 0 ]]; then
-                local ttft_p50_target=$((ttft_total_count * 50 / 100))
-                local ttft_p95_target=$((ttft_total_count * 95 / 100))
-            
-                for i in "${!ttft_buckets[@]}"; do
-                    local bucket_le="${ttft_buckets[$i]}"
-                    local bucket_count="${ttft_counts[$i]}"
+            local ttft_result
+            ttft_result=$(echo "$ttft_data" | awk -F'} ' '
+            BEGIN { n = 0 }
+            NF < 2 { next }
+            {
+                # Field 1 is metric{labels, Field 2 is "count [timestamp]"
+                labels = $1
+                values = $2
                 
-                    local ms_value=$(echo "$bucket_le * 1000" | bc 2>/dev/null | cut -d'.' -f1)
-                    [[ -z "$ms_value" ]] && ms_value=0
+                # Extract le value from labels
+                if (index(labels, "le=\"") == 0) next
+                le_part = labels
+                sub(/.*le="/, "", le_part)
+                sub(/".*/, "", le_part)
+                le = le_part
+                if (le == "" || le == "+Inf") next
                 
-                    if [[ "$ttft_p50" == "N/A" ]] && [[ $bucket_count -ge $ttft_p50_target ]]; then
-                        ttft_p50=$ms_value
-                    fi
-                    if [[ "$ttft_p95" == "N/A" ]] && [[ $bucket_count -ge $ttft_p95_target ]]; then
-                        ttft_p95=$ms_value
-                    fi
-                done
+                # Extract count (first number in values field)
+                split(values, parts, " ")
+                count = parts[1]
+                # Handle scientific notation or floats by converting to int
+                if (count ~ /^[0-9]+\.?[0-9]*([eE][+-]?[0-9]+)?$/) {
+                    count = int(count + 0.5)
+                } else {
+                    next
+                }
+                
+                # Aggregate by bucket across all pods
+                bucket_count[le] += count
+                if (!(le in seen)) {
+                    buckets[n++] = le
+                    seen[le] = 1
+                }
+            }
+            END {
+                if (n == 0) exit
+                # Sort buckets numerically
+                for (i = 0; i < n-1; i++) {
+                    for (j = i+1; j < n; j++) {
+                        if (buckets[i]+0 > buckets[j]+0) {
+                            tmp = buckets[i]
+                            buckets[i] = buckets[j]
+                            buckets[j] = tmp
+                        }
+                    }
+                }
+                total = bucket_count[buckets[n-1]]
+                if (total <= 0) exit
+                p50_target = int(total / 2)
+                p95_target = int(total * 95 / 100)
+                p50 = "N/A"; p95 = "N/A"
+                for (i = 0; i < n; i++) {
+                    le = buckets[i]
+                    cnt = bucket_count[le]
+                    ms = int(le * 1000)
+                    if (p50 == "N/A" && cnt >= p50_target) p50 = ms
+                    if (p95 == "N/A" && cnt >= p95_target) p95 = ms
+                }
+                print p50 "|" p95
+            }')
+            if [[ -n "$ttft_result" ]]; then
+                ttft_p50=$(echo "$ttft_result" | cut -d'|' -f1)
+                ttft_p95=$(echo "$ttft_result" | cut -d'|' -f2)
             fi
         fi
         
         # Parse ITL (Inter-Token Latency) histogram buckets for percentiles
-        # vllm:time_per_output_token_seconds_bucket{le="X"} gives cumulative counts
+        # Uses awk to aggregate across multiple pods and calculate percentiles
+        # Format: metric{labels,le="X"} count [timestamp]
         local itl_data=""
         while IFS= read -r line; do
-            if [[ "$line" =~ ^vllm[_:]time_per_output_token_seconds_bucket ]]; then
+            if [[ "$line" =~ ^vllm[_:]request_time_per_output_token_seconds_bucket ]]; then
                 itl_data+="$line"$'\n'
             fi
         done <<< "$raw_metrics"
         
         if [[ -n "$itl_data" ]]; then
-            # Parse histogram buckets to estimate percentiles
-            # Format: vllm:time_per_output_token_seconds_bucket{le="0.5",...} count
-            local -a buckets=()
-            local -a counts=()
-            local total_count=0
-        
-            while IFS= read -r line; do
-                [[ -z "$line" ]] && continue
-                # Extract le value and count
-                # Format: metric{labels,le="X"} count [timestamp]
-                if [[ "$line" =~ le=\"([0-9.]+)\" ]]; then
-                    local le="${BASH_REMATCH[1]}"
-                    # Count is after the closing brace, before optional timestamp
-                    # Use awk to get the field after }, handle both "} count" and "} count timestamp"
-                    local count=$(echo "$line" | awk -F'} ' '{print $2}' | awk '{print $1}')
-                    if [[ "$count" =~ ^[0-9]+\.?[0-9]*$ ]]; then
-                        # Convert float to int if needed
-                        count=${count%.*}
-                        buckets+=("$le")
-                        counts+=("$count")
-                        total_count=$count  # Last bucket is total
-                    fi
-                fi
-            done <<< "$itl_data"
-        
-            # Calculate percentiles from histogram
-            if [[ $total_count -gt 0 ]] && [[ ${#buckets[@]} -gt 0 ]]; then
-                local p50_target=$((total_count * 50 / 100))
-                local p95_target=$((total_count * 95 / 100))
-            
-                for i in "${!buckets[@]}"; do
-                    local bucket_le="${buckets[$i]}"
-                    local bucket_count="${counts[$i]}"
+            local itl_result
+            itl_result=$(echo "$itl_data" | awk -F'} ' '
+            BEGIN { n = 0 }
+            NF < 2 { next }
+            {
+                # Field 1 is metric{labels, Field 2 is "count [timestamp]"
+                labels = $1
+                values = $2
                 
-                    # Convert seconds to milliseconds
-                    local ms_value=$(echo "$bucket_le * 1000" | bc 2>/dev/null | cut -d'.' -f1)
-                    [[ -z "$ms_value" ]] && ms_value=0
+                # Extract le value from labels
+                if (index(labels, "le=\"") == 0) next
+                le_part = labels
+                sub(/.*le="/, "", le_part)
+                sub(/".*/, "", le_part)
+                le = le_part
+                if (le == "" || le == "+Inf") next
                 
-                    if [[ "$itl_p50" == "N/A" ]] && [[ $bucket_count -ge $p50_target ]]; then
-                        itl_p50=$ms_value
-                    fi
-                    if [[ "$itl_p95" == "N/A" ]] && [[ $bucket_count -ge $p95_target ]]; then
-                        itl_p95=$ms_value
-                    fi
-                done
+                # Extract count (first number in values field)
+                split(values, parts, " ")
+                count = parts[1]
+                # Handle scientific notation or floats by converting to int
+                if (count ~ /^[0-9]+\.?[0-9]*([eE][+-]?[0-9]+)?$/) {
+                    count = int(count + 0.5)
+                } else {
+                    next
+                }
+                
+                # Aggregate by bucket across all pods
+                bucket_count[le] += count
+                if (!(le in seen)) {
+                    buckets[n++] = le
+                    seen[le] = 1
+                }
+            }
+            END {
+                if (n == 0) exit
+                # Sort buckets numerically
+                for (i = 0; i < n-1; i++) {
+                    for (j = i+1; j < n; j++) {
+                        if (buckets[i]+0 > buckets[j]+0) {
+                            tmp = buckets[i]
+                            buckets[i] = buckets[j]
+                            buckets[j] = tmp
+                        }
+                    }
+                }
+                total = bucket_count[buckets[n-1]]
+                if (total <= 0) exit
+                p50_target = int(total / 2)
+                p95_target = int(total * 95 / 100)
+                p50 = "N/A"; p95 = "N/A"
+                for (i = 0; i < n; i++) {
+                    le = buckets[i]
+                    cnt = bucket_count[le]
+                    ms = int(le * 1000)
+                    if (p50 == "N/A" && cnt >= p50_target) p50 = ms
+                    if (p95 == "N/A" && cnt >= p95_target) p95 = ms
+                }
+                print p50 "|" p95
+            }')
+            if [[ -n "$itl_result" ]]; then
+                itl_p50=$(echo "$itl_result" | cut -d'|' -f1)
+                itl_p95=$(echo "$itl_result" | cut -d'|' -f2)
             fi
         fi
         
@@ -1542,27 +1588,33 @@ get_performance_metrics() {
         done <<< "$raw_metrics"
         
         if [[ -n "$e2e_data" ]]; then
-            # Bash 3.2 and BSD awk compatible: use sed/awk to aggregate and calculate percentiles
+            # Bash 3.2 and BSD awk compatible: use -F'} ' to split on closing brace
             local e2e_result
-            e2e_result=$(echo "$e2e_data" | awk '
+            e2e_result=$(echo "$e2e_data" | awk -F'} ' '
             BEGIN { n = 0 }
+            NF < 2 { next }
             {
-                # Extract le value using gsub - works on BSD awk
-                line = $0
-                # Find le="X" pattern and extract X
-                if (index(line, "le=\"") == 0) next
-                # Remove everything before le="
-                sub(/.*le="/, "", line)
-                # Remove everything after the closing quote
-                sub(/".*/, "", line)
-                le = line
+                # Field 1 is metric{labels, Field 2 is "count [timestamp]"
+                labels = $1
+                values = $2
+                
+                # Extract le value from labels
+                if (index(labels, "le=\"") == 0) next
+                le_part = labels
+                sub(/.*le="/, "", le_part)
+                sub(/".*/, "", le_part)
+                le = le_part
                 if (le == "" || le == "+Inf") next
                 
-                # Extract count - last field before optional timestamp
-                # OTel format: metric{labels} value timestamp
-                count = $(NF-1)
-                if (count !~ /^[0-9]+$/) count = $NF
-                if (count !~ /^[0-9]+$/) next
+                # Extract count (first number in values field)
+                split(values, parts, " ")
+                count = parts[1]
+                # Handle scientific notation or floats by converting to int
+                if (count ~ /^[0-9]+\.?[0-9]*([eE][+-]?[0-9]+)?$/) {
+                    count = int(count + 0.5)
+                } else {
+                    next
+                }
                 
                 # Aggregate by bucket
                 bucket_count[le] += count
@@ -2395,7 +2447,7 @@ render_insights_section() {
                 local pending=$((METRIC_PODS_DESIRED - METRIC_PODS_RUNNING))
                 # Show KEDA scaling with queue context
                 if [[ "$METRIC_QUEUE_DEPTH" =~ ^[0-9]+$ ]] && [[ $METRIC_QUEUE_DEPTH -gt 0 ]]; then
-                    insights+=("KEDA: Scaling ${METRIC_PODS_RUNNING}→${METRIC_PODS_DESIRED} pods (queue: $METRIC_QUEUE_DEPTH)")
+                    insights+=("KEDA: Scaling ${METRIC_PODS_RUNNING}->${METRIC_PODS_DESIRED} pods (queue: $METRIC_QUEUE_DEPTH)")
                 else
                     insights+=("KEDA: Scaling up to $METRIC_PODS_DESIRED pods")
                 fi
@@ -3076,6 +3128,11 @@ cleanup() {
     
     # Reset RUNNING flag
     RUNNING=false
+    
+    # Kill tmux session if running inside one
+    if [[ -n "$TMUX" ]]; then
+        tmux kill-session -t demo-dashboard 2>/dev/null
+    fi
 }
 
 # -----------------------------------------------------------------------------
