@@ -27,7 +27,8 @@ demos/<demo-name>/
 ├── terraform/          # Infrastructure as code
 ├── kubernetes/         # Kubernetes manifests
 ├── app/                # Application code (if any)
-└── scripts/            # Helper scripts
+├── scripts/            # Helper scripts
+└── grafana/            # Grafana dashboards from presentation
 ```
 
 ## 🚀 Quick Start
